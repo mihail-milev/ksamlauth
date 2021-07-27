@@ -38,7 +38,7 @@ curl -o ksamlauth https://url-to-ksamlauth-ingress.com/download
 ```
 ./ksamlauth login
 ```
-copy the URL and paste it in your browser;
+    copy the URL and paste it in your browser;
 8. authenticate against your IdP and wait for the terminal application "./ksamlauth login" to terminate automatically;
 9. set the environment variable KUBECONFIG by calling (for bash-compatible shells)
 ```
