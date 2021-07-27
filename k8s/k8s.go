@@ -49,6 +49,7 @@ type K8sConnection interface {
 	CreateSa(name, namespace string, annotations map[string]string) error
 	GetTokenForSa(name, namespace string) (string, error)
 	DeleteSa(name, namespace string) error
+	PatchSaAnnotations(name, namespace string, annotations map[string]string) error
 }
 
 type K8sConnectionDefault struct {
@@ -65,14 +66,13 @@ func NewK8sConnection(token *string, cacert *x509.Certificate, address string) K
 	}
 }
 
-func (k *K8sConnectionDefault) performRestRequest(method, uri, body string) (string, error) {
+func (k *K8sConnectionDefault) performRestRequest(method, uri, body string, opts ...string) (string, error) {
 	certpool := x509.NewCertPool()
 	certpool.AddCert(k.CACert)
 	client := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				RootCAs:            certpool,
-				InsecureSkipVerify: true,
+				RootCAs: certpool,
 			},
 		},
 	}
@@ -82,6 +82,11 @@ func (k *K8sConnectionDefault) performRestRequest(method, uri, body string) (str
 	}
 	req.Header.Add("Accept", "application/json")
 	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", *k.Token))
+	if len(opts) > 0 {
+		req.Header.Add("Content-Type", opts[0])
+	} else {
+		req.Header.Add("Content-Type", "application/json")
+	}
 	if body != "" {
 		bodyReader := strings.NewReader(body)
 		req.Body = io.NopCloser(bodyReader)
@@ -168,5 +173,21 @@ func (k *K8sConnectionDefault) GetTokenForSa(name, namespace string) (string, er
 
 func (k *K8sConnectionDefault) DeleteSa(name, namespace string) error {
 	_, err := k.performRestRequest("DELETE", fmt.Sprintf("/api/v1/namespaces/%s/serviceaccounts/%s", namespace, name), "")
+	return err
+}
+
+func (k *K8sConnectionDefault) PatchSaAnnotations(name, namespace string, annotations map[string]string) error {
+	new_sa_dt := ServiceAccount{
+		Metadata: Metadata{
+			Name:        name,
+			Namespace:   namespace,
+			Annotations: annotations,
+		},
+	}
+	bd, err := json.Marshal(&new_sa_dt)
+	if err != nil {
+		return err
+	}
+	_, err = k.performRestRequest("PATCH", fmt.Sprintf("/api/v1/namespaces/%s/serviceaccounts/%s", namespace, name), string(bd), "application/strategic-merge-patch+json")
 	return err
 }

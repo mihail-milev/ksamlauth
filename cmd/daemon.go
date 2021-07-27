@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -24,15 +25,16 @@ import (
 )
 
 const (
-	ENV_VAR_NAME_TOKEN_DIR          = "KUBERNETES_SERVICE_ACCOUNT_TOKEN_DIR"
-	ENV_VAR_SA_NAMESPACE            = "NAMESPACE_FOR_MANAGING_SA"
-	ENV_VAR_LISTEN_PORT             = "KSAMLAUTH_LISTEN_PORT"
-	ENV_VAR_IDP_CERT                = "IDP_CERTIFICATE"
-	DEFAULT_LISTEN_PORT             = 16161
-	ANNOTATION_TITLE_CREATION_TIME  = "ksamlauth/creation-time"
-	ANNOTATION_TITLE_IN_RESPONSE_TO = "ksamlauth/in-response-to"
-	DEFAULT_TOKEN_VALID_PERIOD      = 30 * time.Minute
-	ENV_VAR_KUBERNETES_ENDPOINT     = "CUSTOM_KUBERNETES_ENDPOINT"
+	ENV_VAR_NAME_TOKEN_DIR             = "KUBERNETES_SERVICE_ACCOUNT_TOKEN_DIR"
+	ENV_VAR_SA_NAMESPACE               = "NAMESPACE_FOR_MANAGING_SA"
+	ENV_VAR_LISTEN_PORT                = "KSAMLAUTH_LISTEN_PORT"
+	ENV_VAR_IDP_CERT                   = "IDP_CERTIFICATE"
+	DEFAULT_LISTEN_PORT                = 16161
+	ANNOTATION_TITLE_MODIFICATION_TIME = "ksamlauth/modification-time"
+	ANNOTATION_TITLE_IN_RESPONSE_TO    = "ksamlauth/in-response-to"
+	DEFAULT_TOKEN_VALID_PERIOD         = 30 * time.Minute
+	DEFAULT_SA_PRUNE_PERIOD            = 5 * time.Second
+	ENV_VAR_KUBERNETES_ENDPOINT        = "CUSTOM_KUBERNETES_ENDPOINT"
 )
 
 type KubernetesSAInfo struct {
@@ -216,7 +218,13 @@ func (vh *ValidateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// search for account with username
-	k8s_conn := k8s.NewK8sConnection(&vh.K8sConfig.Token, vh.Certificate, vh.K8sEndpoint)
+	pm, _ := pem.Decode([]byte(vh.K8sConfig.Cert))
+	k8scert, err := x509.ParseCertificate(pm.Bytes)
+	if err != nil {
+		log.Fatalf("validator: parse cert error: %s", err)
+		return
+	}
+	k8s_conn := k8s.NewK8sConnection(&vh.K8sConfig.Token, k8scert, vh.K8sEndpoint)
 	current_utc_time := time.Now().UTC()
 	current_time_str, err := current_utc_time.MarshalText()
 	if err != nil {
@@ -224,7 +232,6 @@ func (vh *ValidateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Error(err)
 		return
 	}
-	var token_expiration_time string
 	sa_found, err := k8s_conn.SearchForSa(username, os.Getenv(ENV_VAR_SA_NAMESPACE))
 	if err != nil && fmt.Sprintf("%s", err) != k8s.NOT_FOUND_ERROR {
 		vh.WriteErrResponse(w, "Something went wrong while getting service account list", 500)
@@ -244,8 +251,8 @@ func (vh *ValidateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		annotations := map[string]string{
-			ANNOTATION_TITLE_CREATION_TIME:  string(current_time_str),
-			ANNOTATION_TITLE_IN_RESPONSE_TO: in_resp_to,
+			ANNOTATION_TITLE_MODIFICATION_TIME: string(current_time_str),
+			ANNOTATION_TITLE_IN_RESPONSE_TO:    in_resp_to,
 		}
 		err = k8s_conn.CreateSa(username, os.Getenv(ENV_VAR_SA_NAMESPACE), annotations)
 		if err != nil {
@@ -253,30 +260,23 @@ func (vh *ValidateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Error(err)
 			return
 		}
-		current_utc_time_plus_30min := current_utc_time.Add(DEFAULT_TOKEN_VALID_PERIOD)
-		token_expiration_time_dt, err := current_utc_time_plus_30min.MarshalText()
-		if err != nil {
-			vh.WriteErrResponse(w, "Something went wrong while converting new token validity time", 500)
-			log.Error(err)
-			return
-		}
-		token_expiration_time = string(token_expiration_time_dt)
+		time.Sleep(1 * time.Second) // give k8s some time to create the token
 	} else {
 		// if existing -> check time and update
-		creation_timestamp_str, creation_timestamp_exists := sa_found.Metadata.Annotations[ANNOTATION_TITLE_CREATION_TIME]
-		if !creation_timestamp_exists {
+		mod_timestamp_str, mod_timestamp_exists := sa_found.Metadata.Annotations[ANNOTATION_TITLE_MODIFICATION_TIME]
+		if !mod_timestamp_exists {
 			vh.WriteErrResponse(w, "SA doesn't have a creation timestamp", 500)
 			log.Error(err)
 			return
 		}
-		creation_timestamp, err := time.Parse(time.RFC3339, creation_timestamp_str)
+		mod_timestamp, err := time.Parse(time.RFC3339, mod_timestamp_str)
 		if err != nil {
 			vh.WriteErrResponse(w, "unable to convert creation timestamp", 500)
 			log.Error(err)
 			return
 		}
-		creation_timestamp_plus_30min := creation_timestamp.Add(DEFAULT_TOKEN_VALID_PERIOD)
-		if creation_timestamp_plus_30min.Unix() <= current_utc_time.Unix() {
+		mod_timestamp_plus_30min := mod_timestamp.Add(DEFAULT_TOKEN_VALID_PERIOD)
+		if mod_timestamp_plus_30min.Unix() < current_utc_time.Unix() {
 			err = k8s_conn.DeleteSa(username, os.Getenv(ENV_VAR_SA_NAMESPACE))
 			if err != nil {
 				vh.WriteErrResponse(w, "unable to delete SA", 500)
@@ -284,7 +284,7 @@ func (vh *ValidateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			vh.WriteErrResponse(w, "The token validity time has passed away, please re-login", 400)
-			log.Errorf("Creation time stamp = %s, current time is %s\n", creation_timestamp_str, string(current_time_str))
+			log.Errorf("Creation time stamp = %s, current time is %s\n", mod_timestamp_str, string(current_time_str))
 			return
 		}
 		in_response_to, in_response_to_exists := sa_found.Metadata.Annotations[ANNOTATION_TITLE_IN_RESPONSE_TO]
@@ -304,13 +304,23 @@ func (vh *ValidateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Errorf("SA in response to = %s, SAML response to = %s\n", in_response_to, in_resp_to)
 			return
 		}
-		token_expiration_time_dt, err := creation_timestamp_plus_30min.MarshalText()
+		annotations := map[string]string{
+			ANNOTATION_TITLE_MODIFICATION_TIME: string(current_time_str),
+			ANNOTATION_TITLE_IN_RESPONSE_TO:    in_resp_to,
+		}
+		err = k8s_conn.PatchSaAnnotations(sa_found.Metadata.Name, sa_found.Metadata.Namespace, annotations)
 		if err != nil {
-			vh.WriteErrResponse(w, "Something went wrong while converting existing token validity time", 500)
+			vh.WriteErrResponse(w, "unable to patch SA", 500)
 			log.Error(err)
 			return
 		}
-		token_expiration_time = string(token_expiration_time_dt)
+	}
+	current_utc_time_plus_30min := current_utc_time.Add(DEFAULT_TOKEN_VALID_PERIOD)
+	token_expiration_time_dt, err := current_utc_time_plus_30min.MarshalText()
+	if err != nil {
+		vh.WriteErrResponse(w, "Something went wrong while converting token validity time", 500)
+		log.Error(err)
+		return
 	}
 	token_to_return, err := k8s_conn.GetTokenForSa(username, os.Getenv(ENV_VAR_SA_NAMESPACE))
 	if err != nil {
@@ -318,10 +328,94 @@ func (vh *ValidateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Error(err)
 		return
 	}
-	vh.WriteSuccessResponse(w, token_to_return, token_expiration_time)
+	vh.WriteSuccessResponse(w, token_to_return, string(token_expiration_time_dt))
 }
 
-func prepareStartWebServer(k8sconfig *KubernetesSAInfo) error {
+func saPruner(k8sconfig *KubernetesSAInfo, k8sendpoint string) {
+	c := time.Tick(DEFAULT_SA_PRUNE_PERIOD)
+	pm, _ := pem.Decode([]byte((*k8sconfig).Cert))
+	cert, err := x509.ParseCertificate(pm.Bytes)
+	if err != nil {
+		log.Fatalf("SA pruner: parse cert error: %s", err)
+		return
+	}
+	k8s_conn := k8s.NewK8sConnection(&(*k8sconfig).Token, cert, k8sendpoint)
+	for range c {
+		log.Debug("SA pruner running ...")
+		sa_in_ns, err := k8s_conn.GetAllSAinNamespace(os.Getenv(ENV_VAR_SA_NAMESPACE))
+		if err != nil {
+			log.Error(err)
+			continue
+		}
+		for _, sa := range sa_in_ns.Items {
+			log.Debugf("SA pruner: checking SA %s", sa.Metadata.Name)
+			time_annotation, time_annotation_exists := sa.Metadata.Annotations[ANNOTATION_TITLE_MODIFICATION_TIME]
+			if !time_annotation_exists {
+				continue
+			}
+			log.Debugf("SA pruner: found time annotation %s", time_annotation)
+			modtime, err := time.Parse(time.RFC3339, time_annotation)
+			if err != nil {
+				log.Error(err)
+				continue
+			}
+			delete_time := modtime.Add(DEFAULT_TOKEN_VALID_PERIOD)
+			curtime := time.Now().UTC()
+			if delete_time.Unix() < curtime.Unix() {
+				log.Debugf("SA pruner: deleting SA %s, because to be deleted time=%s and curtime=%s", sa.Metadata.Name, delete_time, curtime)
+				err = k8s_conn.DeleteSa(sa.Metadata.Name, sa.Metadata.Namespace)
+				if err != nil {
+					log.Error(err)
+					continue
+				}
+			}
+		}
+	}
+}
+
+func writeDownloadError(w http.ResponseWriter, err error) {
+	w.WriteHeader(500)
+	w.Write([]byte(fmt.Sprintf("%s", err)))
+}
+
+func downloadTool(w http.ResponseWriter, r *http.Request) {
+	exec_path, err := os.Executable()
+	if err != nil {
+		log.Error(err)
+		writeDownloadError(w, err)
+		return
+	}
+	stat, err := os.Stat(exec_path)
+	if err != nil {
+		log.Error(err)
+		writeDownloadError(w, err)
+		return
+	}
+	fl, err := os.OpenFile(exec_path, os.O_RDONLY, 0644)
+	if err != nil {
+		log.Error(err)
+		writeDownloadError(w, err)
+		return
+	}
+	defer fl.Close()
+	w.Header().Add("Content-Type", "application/octet-stream")
+	w.Header().Add("Content-Length", fmt.Sprintf("%d", stat.Size()))
+	w.WriteHeader(200)
+	written, err := io.Copy(w, fl)
+	if err != nil {
+		log.Error(err)
+		writeDownloadError(w, err)
+		return
+	}
+	if written != stat.Size() {
+		err = fmt.Errorf("download: written size different: %d <> %d", written, stat.Size())
+		log.Error(err)
+		writeDownloadError(w, err)
+		return
+	}
+}
+
+func prepareStartWebServer(k8sconfig *KubernetesSAInfo, k8sendpoint string) error {
 	port := DEFAULT_LISTEN_PORT
 	if os.Getenv(ENV_VAR_LISTEN_PORT) != "" {
 		if val, err := strconv.Atoi(os.Getenv(ENV_VAR_LISTEN_PORT)); err == nil {
@@ -332,6 +426,7 @@ func prepareStartWebServer(k8sconfig *KubernetesSAInfo) error {
 			log.Errorf("The specified value in the environment variable %s is not a valid integer: %s\n", ENV_VAR_LISTEN_PORT, os.Getenv(ENV_VAR_LISTEN_PORT))
 		}
 	}
+	http.HandleFunc("/download", downloadTool)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "running ...")
 	})
@@ -339,14 +434,6 @@ func prepareStartWebServer(k8sconfig *KubernetesSAInfo) error {
 	cert, err := x509.ParseCertificate(pm.Bytes)
 	if err != nil {
 		return fmt.Errorf("parse cert error: %s", err)
-	}
-	k8sendpoint := "https://kubernetes.default.svc:443"
-	if os.Getenv(ENV_VAR_KUBERNETES_ENDPOINT) != "" {
-		if _, err := url.Parse(os.Getenv(ENV_VAR_KUBERNETES_ENDPOINT)); err != nil {
-			log.Errorf("The specified custom kubernetes endpoint via %s is invalid: %s", ENV_VAR_KUBERNETES_ENDPOINT, err)
-		} else {
-			k8sendpoint = os.Getenv(ENV_VAR_KUBERNETES_ENDPOINT)
-		}
 	}
 	vh := ValidateHandler{
 		K8sConfig:   k8sconfig,
@@ -414,6 +501,14 @@ variable %s.`, ENV_VAR_SA_NAMESPACE, ENV_VAR_NAME_TOKEN_DIR, DEFAULT_LISTEN_PORT
 			log.Fatalf("the environment variable %s must be set", ENV_VAR_IDP_CERT)
 			return
 		}
+		k8sendpoint := "https://kubernetes.default.svc:443"
+		if os.Getenv(ENV_VAR_KUBERNETES_ENDPOINT) != "" {
+			if _, err := url.Parse(os.Getenv(ENV_VAR_KUBERNETES_ENDPOINT)); err != nil {
+				log.Errorf("The specified custom kubernetes endpoint via %s is invalid: %s", ENV_VAR_KUBERNETES_ENDPOINT, err)
+			} else {
+				k8sendpoint = os.Getenv(ENV_VAR_KUBERNETES_ENDPOINT)
+			}
+		}
 		log.Debug("ServiceAccount token path: ", path_to_admin_token)
 		var k8sconfig KubernetesSAInfo
 		err := checkServiceAccountFolder(path_to_admin_token, &k8sconfig)
@@ -421,7 +516,8 @@ variable %s.`, ENV_VAR_SA_NAMESPACE, ENV_VAR_NAME_TOKEN_DIR, DEFAULT_LISTEN_PORT
 			log.Fatal(err)
 			return
 		}
-		err = prepareStartWebServer(&k8sconfig)
+		go saPruner(&k8sconfig, k8sendpoint)
+		err = prepareStartWebServer(&k8sconfig, k8sendpoint)
 		if err != nil {
 			log.Fatal(err)
 			return

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	sig "github.com/russellhaering/goxmldsig"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	yaml "gopkg.in/yaml.v3"
 )
 
 const (
@@ -28,6 +30,7 @@ const (
 	<samlp:NameIDPolicy AllowCreate="true" Format="urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified"/>
 </samlp:AuthnRequest>`
 	CREDENTIALS_FILENAME = "ksamlauth.credentials"
+	KUBECONFIG_FILENAME  = "ksamlauth.kubeconfig"
 )
 
 type GlobalConfigSection struct {
@@ -38,8 +41,61 @@ type GlobalConfigSection struct {
 	MyCertificate string `toml:"my_certificate"`
 }
 
+type ClusterConfigSection struct {
+	CA                string `toml:"ca_cert_base64"`
+	MasterEndpoint    string `toml:"master_endpoint"`
+	Name              string `toml:"name"`
+	KsamlauthEndpoint string `toml:"ksamlauth_endpoint"`
+}
+
 type Configuration struct {
-	Global GlobalConfigSection `toml:"global"`
+	Global   GlobalConfigSection    `toml:"global"`
+	Clusters []ClusterConfigSection `toml:"clusters,omitempty"`
+}
+
+type KubeconfigClusterConn struct {
+	CAData string `yaml:"certificate-authority-data"`
+	Server string `yaml:"server"`
+}
+
+type KubeconfigCluster struct {
+	Name    string                `yaml:"name"`
+	Cluster KubeconfigClusterConn `yaml:"cluster"`
+}
+
+type KubeconfigUserExecDef struct {
+	ApiVersion string   `yaml:"apiVersion"`
+	Args       []string `yaml:"args"`
+	Command    string   `yaml:"command"`
+}
+
+type KubeconfigUserDef struct {
+	Exec KubeconfigUserExecDef `yaml:"exec"`
+}
+
+type KubeconfigUser struct {
+	Name string            `yaml:"name"`
+	User KubeconfigUserDef `yaml:"user"`
+}
+
+type KubeconfigContextDef struct {
+	Cluster string `yaml:"cluster"`
+	User    string `yaml:"user"`
+}
+
+type KubeconfigContext struct {
+	Context KubeconfigContextDef `yaml:"context"`
+	Name    string               `yaml:"name"`
+}
+
+type Kubeconfig struct {
+	ApiVersion     string              `yaml:"apiVersion"`
+	Kind           string              `yaml:"kind"`
+	CurrentContext string              `yaml:"current-context"`
+	Preferences    struct{}            `yaml:"preferences"`
+	Clusters       []KubeconfigCluster `yaml:"clusters"`
+	Users          []KubeconfigUser    `yaml:"users"`
+	Contexts       []KubeconfigContext `yaml:"contexts"`
 }
 
 func generateQueryString(request string) string {
@@ -114,6 +170,7 @@ func createSamlAuthnRequest(endpoint, entity, destination string, lvl int) (stri
 type IdPResponseHandler struct {
 	CredentialsPath string
 	ExitChannel     chan string
+	ClustersConfig  []ClusterConfigSection
 }
 
 func (ip *IdPResponseHandler) WriteMsg(w http.ResponseWriter, message string, statusCode int) {
@@ -132,6 +189,67 @@ func (ip *IdPResponseHandler) WriteMsg(w http.ResponseWriter, message string, st
 </body>
 </html>`, status_message, message)
 	w.Write([]byte(html_message))
+}
+
+func (ip *IdPResponseHandler) writeKubeconfig() error {
+	if len(ip.ClustersConfig) < 1 {
+		return nil
+	}
+	exec_path, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	func_gen_ctx_name := func(username, clustername string) string {
+		return fmt.Sprintf("%s%s@%s", username, clustername, clustername)
+	}
+	clusters := make([]KubeconfigCluster, 0)
+	users := make([]KubeconfigUser, 0)
+	contexts := make([]KubeconfigContext, 0)
+	for _, clust_conf := range ip.ClustersConfig {
+		clusters = append(clusters, KubeconfigCluster{
+			Name: clust_conf.Name,
+			Cluster: KubeconfigClusterConn{
+				CAData: clust_conf.CA,
+				Server: clust_conf.MasterEndpoint,
+			},
+		})
+		users = append(users, KubeconfigUser{
+			Name: fmt.Sprintf("user_on_%s", clust_conf.Name),
+			User: KubeconfigUserDef{
+				Exec: KubeconfigUserExecDef{
+					ApiVersion: "client.authentication.k8s.io/v1alpha1",
+					Args:       []string{"validate", fmt.Sprintf("%s/validate", clust_conf.KsamlauthEndpoint)},
+					Command:    exec_path,
+				},
+			},
+		})
+		contexts = append(contexts, KubeconfigContext{
+			Name: func_gen_ctx_name("user_on_", clust_conf.Name),
+			Context: KubeconfigContextDef{
+				Cluster: clust_conf.Name,
+				User:    fmt.Sprintf("user_on_%s", clust_conf.Name),
+			},
+		})
+	}
+	kubeconfig := Kubeconfig{
+		ApiVersion:     "v1",
+		Kind:           "Config",
+		Preferences:    struct{}{},
+		Clusters:       clusters,
+		Users:          users,
+		CurrentContext: func_gen_ctx_name("user_on_", ip.ClustersConfig[0].Name),
+		Contexts:       contexts,
+	}
+	kubeconfig_target_path := path.Join(filepath.Dir(ip.CredentialsPath), KUBECONFIG_FILENAME)
+	fh, err := os.OpenFile(kubeconfig_target_path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	enc := yaml.NewEncoder(fh)
+	defer enc.Close()
+	enc.SetIndent(2)
+	return enc.Encode(&kubeconfig)
 }
 
 func (ip *IdPResponseHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -160,6 +278,12 @@ func (ip *IdPResponseHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			log.Fatal(err)
 			return
 		}
+	}
+	err = ip.writeKubeconfig()
+	if err != nil {
+		ip.WriteMsg(w, "Something went wrong, please check the console for more information", 500)
+		log.Fatal(err)
+		return
 	}
 	ip.WriteMsg(w, "Authentication credentials stored, you may close this window now", 200)
 	ip.ExitChannel <- "done"
@@ -197,14 +321,35 @@ my own private key data comes in here
 -----END RSA PRIVATE KEY-----`,
 		},
 	}
-	fh, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	buf := new(bytes.Buffer)
+	enc := toml.NewEncoder(buf)
+	enc.Indent = ""
+	err := enc.Encode(&defconf)
 	if err != nil {
 		return err
 	}
-	defer fh.Close()
-	enc := toml.NewEncoder(fh)
-	err = enc.Encode(&defconf)
-	return err
+	enc.Indent = "# "
+	democlust := map[string][]ClusterConfigSection{"clusters": {{
+		CA:                "base64-encoded-CA-from-cluster",
+		MasterEndpoint:    "https://master.some-cluster.com:6443",
+		Name:              "some-cluster-name",
+		KsamlauthEndpoint: "https://ksamlauth.some-cluster.com",
+	}, {
+		CA:                "base64-encoded-CA-from-another-cluster",
+		MasterEndpoint:    "https://master.some-other-cluster.com:6443",
+		Name:              "some-other-cluster-name",
+		KsamlauthEndpoint: "https://ksamlauth.some-other-cluster.com",
+	}}}
+	enc.Encode(&democlust)
+	if err != nil {
+		return err
+	}
+	return ioutil.WriteFile(path, []byte(strings.ReplaceAll(buf.String(), "[[clusters]]", "# [[clusters]]")), 0600)
+	// fh, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	// if err != nil {
+	// 	return err
+	// }
+	// defer fh.Close()
 }
 
 var loginCmd = &cobra.Command{
@@ -267,6 +412,7 @@ which later can be used to confirm the identity against the kubernetes cluster.`
 		ip := IdPResponseHandler{
 			CredentialsPath: path.Join(folder_flag, CREDENTIALS_FILENAME),
 			ExitChannel:     exit_channel,
+			ClustersConfig:  app_config.Clusters,
 		}
 		http.Handle("/endpoint", &ip)
 		go func() {
