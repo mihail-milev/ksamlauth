@@ -34,11 +34,10 @@ curl -o ksamlauth https://url-to-ksamlauth-ingress.com/download
 ./ksamlauth login --generate-default-config
 ```
 6. modify the file ~/.kube/ksamlauth.toml by adding your private key and certificate, also the IdP endpoint and the client-/entity-id. Optionally add some clusters to the configuration file, in order to get a kubeconfig file automatically generated;
-7. call
+7. execute the following command and copy the URL printed in the console. Paste the URL in your browser
 ```
 ./ksamlauth login
 ```
-    copy the URL and paste it in your browser;
 8. authenticate against your IdP and wait for the terminal application "./ksamlauth login" to terminate automatically;
 9. set the environment variable KUBECONFIG by calling (for bash-compatible shells)
 ```
