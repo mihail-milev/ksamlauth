@@ -21,7 +21,7 @@ Here is the image also available on the blog post:
 make
 ```
 2. push the image to a registry, which your cluster can pull images from;
-3. download the example [install.yaml](/assets/install.yaml) file. There are 4 fields in the form "{{.Template.XXX}}", which need to be defined by you. After these have been defined, execute
+3. download the example [install.yaml](/assets/install.yaml) file. There are 3 fields in the form "{{.Template.XXX}}", which need to be defined by you. After these have been defined, execute
 ```
 kubectl apply -n {desired-namespace} -f install.yaml
 ```
