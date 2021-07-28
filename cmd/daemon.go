@@ -35,6 +35,7 @@ const (
 	DEFAULT_TOKEN_VALID_PERIOD         = 30 * time.Minute
 	DEFAULT_SA_PRUNE_PERIOD            = 5 * time.Second
 	ENV_VAR_KUBERNETES_ENDPOINT        = "CUSTOM_KUBERNETES_ENDPOINT"
+	ENV_VAR_USERCONFIG                 = "KSAMLAUTH_USERCONFIG"
 )
 
 type KubernetesSAInfo struct {
@@ -423,7 +424,7 @@ func downloadTool(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func prepareStartWebServer(k8sconfig *KubernetesSAInfo, k8sendpoint string) error {
+func prepareStartWebServer(k8sconfig *KubernetesSAInfo, k8sendpoint, userconfig string) error {
 	port := DEFAULT_LISTEN_PORT
 	if os.Getenv(ENV_VAR_LISTEN_PORT) != "" {
 		if val, err := strconv.Atoi(os.Getenv(ENV_VAR_LISTEN_PORT)); err == nil {
@@ -433,6 +434,15 @@ func prepareStartWebServer(k8sconfig *KubernetesSAInfo, k8sendpoint string) erro
 		} else {
 			log.Errorf("The specified value in the environment variable %s is not a valid integer: %s\n", ENV_VAR_LISTEN_PORT, os.Getenv(ENV_VAR_LISTEN_PORT))
 		}
+	}
+	if userconfig != "" {
+		http.HandleFunc("/userconfig", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Add("Content-Type", "application/octet-stream")
+			w.Header().Add("Content-Length", fmt.Sprintf("%d", len(userconfig)))
+			w.Header().Add("Content-Disposition", "attachment; filename=\"ksamlauth.toml\"")
+			w.WriteHeader(200)
+			w.Write([]byte(userconfig))
+		})
 	}
 	http.HandleFunc("/download", downloadTool)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -489,7 +499,12 @@ By default the daemon runs on port %d, but this could be overriden with
 the environment variable %s.
 
 The certificate of the identity provider must be provided via the environment
-variable %s.`, ENV_VAR_SA_NAMESPACE, ENV_VAR_NAME_TOKEN_DIR, DEFAULT_LISTEN_PORT, ENV_VAR_LISTEN_PORT, ENV_VAR_IDP_CERT),
+variable %s.
+
+Since writing your own ksamlauth.toml file as a client could be cumbersome,
+cluster providers could set an example ksamlauth.toml file via the environment
+variable %s. This can be downloaded then by calling the /userconfig endpoint.`,
+		ENV_VAR_SA_NAMESPACE, ENV_VAR_NAME_TOKEN_DIR, DEFAULT_LISTEN_PORT, ENV_VAR_LISTEN_PORT, ENV_VAR_IDP_CERT, ENV_VAR_USERCONFIG),
 	Run: func(cmd *cobra.Command, args []string) {
 		if dodebug, err := cmd.Flags().GetBool("debug"); err != nil {
 			log.Fatal(err)
@@ -525,7 +540,7 @@ variable %s.`, ENV_VAR_SA_NAMESPACE, ENV_VAR_NAME_TOKEN_DIR, DEFAULT_LISTEN_PORT
 			return
 		}
 		go saPruner(&k8sconfig, k8sendpoint)
-		err = prepareStartWebServer(&k8sconfig, k8sendpoint)
+		err = prepareStartWebServer(&k8sconfig, k8sendpoint, strings.TrimSpace(os.Getenv(ENV_VAR_USERCONFIG)))
 		if err != nil {
 			log.Fatal(err)
 			return

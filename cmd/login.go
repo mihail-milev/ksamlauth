@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -42,10 +44,11 @@ type GlobalConfigSection struct {
 }
 
 type ClusterConfigSection struct {
-	CA                string `toml:"ca_cert_base64"`
-	MasterEndpoint    string `toml:"master_endpoint"`
-	Name              string `toml:"name"`
-	KsamlauthEndpoint string `toml:"ksamlauth_endpoint"`
+	CA                string   `toml:"ca_cert_base64"`
+	MasterEndpoint    string   `toml:"master_endpoint"`
+	Name              string   `toml:"name"`
+	KsamlauthEndpoint string   `toml:"ksamlauth_endpoint"`
+	AdditionalOpions  []string `toml:"ksamlauth_cmdline_opts"`
 }
 
 type Configuration struct {
@@ -218,8 +221,9 @@ func (ip *IdPResponseHandler) writeKubeconfig() error {
 			User: KubeconfigUserDef{
 				Exec: KubeconfigUserExecDef{
 					ApiVersion: "client.authentication.k8s.io/v1alpha1",
-					Args:       []string{"validate", fmt.Sprintf("%s/validate", clust_conf.KsamlauthEndpoint)},
-					Command:    exec_path,
+					Args: append([]string{"validate"},
+						append(clust_conf.AdditionalOpions, fmt.Sprintf("%s/validate", clust_conf.KsamlauthEndpoint))...),
+					Command: exec_path,
 				},
 			},
 		})
@@ -249,7 +253,24 @@ func (ip *IdPResponseHandler) writeKubeconfig() error {
 	enc := yaml.NewEncoder(fh)
 	defer enc.Close()
 	enc.SetIndent(2)
-	return enc.Encode(&kubeconfig)
+	err = enc.Encode(&kubeconfig)
+	if err != nil {
+		return err
+	}
+	fmt.Print("\n\n")
+	log.Println("kubeconfig configured with the following contexts:")
+	first := true
+	for _, ctx := range contexts {
+		curt := ""
+		if first {
+			curt = " (current)"
+			first = false
+		}
+		fmt.Printf("           - %s%s\n", ctx.Name, curt)
+	}
+	fmt.Print("\n\n")
+	log.Printf("Issue the following command, in order to use the newly created kubeconfig:\nexport KUBECONFIG=%s\n\n", kubeconfig_target_path)
+	return nil
 }
 
 func (ip *IdPResponseHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -294,6 +315,9 @@ func readConfigFile(path string, conf *Configuration) error {
 	if err != nil {
 		return err
 	}
+	if (*conf).Global.Port < 1 || (*conf).Global.Port > 65535 {
+		return fmt.Errorf("configuration file error: port must be in the range 1-65535")
+	}
 	if (*conf).Global.Endpoint == "" {
 		return fmt.Errorf("configuration file error: endpoint may not be empty")
 	}
@@ -303,6 +327,18 @@ func readConfigFile(path string, conf *Configuration) error {
 	}
 	if (*conf).Global.EntityId == "" {
 		return fmt.Errorf("configuration file error: entity_id may not be empty")
+	}
+	for i, clust := range (*conf).Clusters {
+		filtered_clust := []string{}
+		for _, subi := range clust.AdditionalOpions {
+			log.Debugf("cluster %s, found additional option: %s\n", clust.Name, subi)
+			subi_trim := strings.TrimSpace(subi)
+			if subi_trim != "" {
+				log.Debugf("cluster %s, additional option not empty: %s\n", clust.Name, subi_trim)
+				filtered_clust = append(filtered_clust, subi_trim)
+			}
+		}
+		(*conf).Clusters[i].AdditionalOpions = filtered_clust
 	}
 	return err
 }
@@ -334,22 +370,34 @@ my own private key data comes in here
 		MasterEndpoint:    "https://master.some-cluster.com:6443",
 		Name:              "some-cluster-name",
 		KsamlauthEndpoint: "https://ksamlauth.some-cluster.com",
+		AdditionalOpions:  []string{""},
 	}, {
 		CA:                "base64-encoded-CA-from-another-cluster",
 		MasterEndpoint:    "https://master.some-other-cluster.com:6443",
 		Name:              "some-other-cluster-name",
 		KsamlauthEndpoint: "https://ksamlauth.some-other-cluster.com",
+		AdditionalOpions:  []string{""},
 	}}}
 	enc.Encode(&democlust)
 	if err != nil {
 		return err
 	}
 	return ioutil.WriteFile(path, []byte(strings.ReplaceAll(buf.String(), "[[clusters]]", "# [[clusters]]")), 0600)
-	// fh, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
-	// if err != nil {
-	// 	return err
-	// }
-	// defer fh.Close()
+}
+
+// copied this from here: https://gist.github.com/hyg/9c4afcd91fe24316cbf0
+func openbrowser(url string) (err error) {
+	switch runtime.GOOS {
+	case "linux":
+		err = exec.Command("xdg-open", url).Start()
+	case "windows":
+		err = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	case "darwin":
+		err = exec.Command("open", url).Start()
+	default:
+		err = fmt.Errorf("unsupported platform")
+	}
+	return
 }
 
 var loginCmd = &cobra.Command{
@@ -391,6 +439,13 @@ which later can be used to confirm the identity against the kubernetes cluster.`
 			}
 			return
 		}
+		nobrowser_set := false
+		if nbs, err := cmd.Flags().GetBool("no-browser"); err != nil {
+			log.Fatal(err)
+			return
+		} else {
+			nobrowser_set = nbs
+		}
 		var app_config Configuration
 		err := readConfigFile(conf_file_path, &app_config)
 		if err != nil {
@@ -419,7 +474,20 @@ which later can be used to confirm the identity against the kubernetes cluster.`
 			log.Fatal(http.ListenAndServe(fmt.Sprintf("127.0.0.1:%d", app_config.Global.Port), nil))
 		}()
 
-		log.Printf("Please, copy and paste the following URI in your browser:\n%s?%s&%s", app_config.Global.Endpoint, string_to_sign, signature)
+		url_string := fmt.Sprintf("%s?%s&%s", app_config.Global.Endpoint, string_to_sign, signature)
+
+		show_url_func := func() {
+			log.Printf("Please, copy and paste the following URI in your browser:\n%s", url_string)
+		}
+		if !nobrowser_set {
+			err = openbrowser(url_string)
+			if err != nil {
+				show_url_func()
+			}
+			log.Println("A browser window should have opened for authentication. If not, please use the --no-browser option.")
+		} else {
+			show_url_func()
+		}
 
 		<-exit_channel
 		time.Sleep(1 * time.Second)
@@ -431,4 +499,5 @@ func init() {
 	loginCmd.Flags().String("conf", "ksamlauth.toml", "specify an alternative filename for the ksamlauth config file")
 	loginCmd.Flags().String("kube-folder", path.Join(os.Getenv("HOME"), ".kube"), "specify an alternative path for the .kube folder")
 	loginCmd.Flags().Bool("generate-default-config", false, "generate a default config TOML file and exit")
+	loginCmd.Flags().Bool("no-browser", false, "if set, login will not try to automatically open your browser and will display the link in the console")
 }
