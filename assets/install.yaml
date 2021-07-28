@@ -68,7 +68,7 @@ spec:
     spec:
       containers:
         - name: ksamlauth-daemon
-          image: 'ghcr.io/mihail-milev/ksamlauth:9343fd2667'
+          image: 'ghcr.io/mihail-milev/ksamlauth:1c82fcabbd'
           ports:
             - containerPort: 16161
               protocol: TCP
@@ -85,6 +85,9 @@ spec:
           terminationMessagePath: /dev/termination-log
           terminationMessagePolicy: File
           imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
       restartPolicy: Always
       terminationGracePeriodSeconds: 10
       dnsPolicy: ClusterFirst
