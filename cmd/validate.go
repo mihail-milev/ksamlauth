@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -26,9 +27,22 @@ type ExecCredentialStruct struct {
 	Status ExecCredentialStatus `json:"status"`
 }
 
-func sendDataToKsamlauthDaemon(dt []byte, endpoint *url.URL, token_only bool) error {
+func sendDataToKsamlauthDaemon(dt []byte, endpoint *url.URL, token_only, insecure_skip_tls_verify bool) error {
 	br := bytes.NewReader(dt)
-	resp, err := http.Post(endpoint.String(), "multipart/form-data", br)
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: insecure_skip_tls_verify,
+			},
+		},
+	}
+	req, err := http.NewRequest("POST", endpoint.String(), br)
+	if err != nil {
+		return err
+	}
+	req.Header.Add("Content-Type", "multipart/form-data")
+	req.Header.Add("Content-Length", fmt.Sprintf("%d", len(dt)))
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -69,6 +83,7 @@ func writeErrorToLogfile(fpath string, gerr error) {
 		log.Fatalf("Error length not fully written: %d <> %d\n", written, len(gerr.Error()))
 		return
 	}
+	fh.WriteString("\n")
 }
 
 var validateCmd = &cobra.Command{
@@ -98,12 +113,17 @@ is stored inside %s.`, CREDENTIALS_FILENAME, VALIDATE_LOG_FILENAME),
 			writeErrorToLogfile(log_path, err)
 			os.Exit(-1)
 		}
+		insecure_skip_tls_verify, err := cmd.Flags().GetBool("insecure-skip-tls-verify")
+		if err != nil {
+			writeErrorToLogfile(log_path, err)
+			os.Exit(-1)
+		}
 		post_data, err := ioutil.ReadFile(path.Join(kube_folder, CREDENTIALS_FILENAME))
 		if err != nil {
 			writeErrorToLogfile(log_path, err)
 			os.Exit(-1)
 		}
-		err = sendDataToKsamlauthDaemon(post_data, endpoint, token_only)
+		err = sendDataToKsamlauthDaemon(post_data, endpoint, token_only, insecure_skip_tls_verify)
 		if err != nil {
 			writeErrorToLogfile(log_path, err)
 			os.Exit(-1)
@@ -114,14 +134,16 @@ is stored inside %s.`, CREDENTIALS_FILENAME, VALIDATE_LOG_FILENAME),
 func init() {
 	def_kube_folder := path.Join(os.Getenv("HOME"), ".kube")
 	validateCmd.Flags().String("kube-folder", def_kube_folder, "specify an alternative path for the .kube folder")
-	validateCmd.Flags().Bool("token-only", false, "if true, instead of the JSON structure, only the SA token will be printed to the console on success")
+	validateCmd.Flags().Bool("token-only", false, "if set, instead of the JSON structure, only the SA token will be printed to the console on success")
+	validateCmd.Flags().Bool("insecure-skip-tls-verify", false, "if set, the validation towards the ksamlauth daemon ingress will not verify the certificate")
 	validateCmd.SetUsageTemplate(fmt.Sprintf(`Usage:
   ksamlauth validate [flags] {ksamlauth-endpoint-url}
 
 Flags:
-  -h, --help                 help for validate
-      --kube-folder string   specify an alternative path for the .kube folder (default "%s")
-	  --token-only           if true, instead of the JSON structure, only the SA token will be printed to the console on success
+  -h, --help                      help for validate
+      --kube-folder string        specify an alternative path for the .kube folder (default "%s")
+      --token-only                if set, instead of the JSON structure, only the SA token will be printed to the console on success
+      --insecure-skip-tls-verify  if set, the validation towards the ksamlauth daemon ingress will not verify the certificate
 
 Global Flags:
       --debug   enable debug messages
