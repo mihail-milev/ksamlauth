@@ -385,13 +385,20 @@ func downloadTool(w http.ResponseWriter, r *http.Request) {
 		writeDownloadError(w, err)
 		return
 	}
-	stat, err := os.Stat(exec_path)
+	download_path := exec_path
+	desired_os := r.URL.Query().Get("os")
+	if desired_os == "win" {
+		download_path = fmt.Sprintf("%s-win", download_path)
+	} else if desired_os == "mac" {
+		download_path = fmt.Sprintf("%s-mac", download_path)
+	}
+	stat, err := os.Stat(download_path)
 	if err != nil {
 		log.Error(err)
 		writeDownloadError(w, err)
 		return
 	}
-	fl, err := os.OpenFile(exec_path, os.O_RDONLY, 0644)
+	fl, err := os.OpenFile(download_path, os.O_RDONLY, 0644)
 	if err != nil {
 		log.Error(err)
 		writeDownloadError(w, err)
@@ -400,6 +407,7 @@ func downloadTool(w http.ResponseWriter, r *http.Request) {
 	defer fl.Close()
 	w.Header().Add("Content-Type", "application/octet-stream")
 	w.Header().Add("Content-Length", fmt.Sprintf("%d", stat.Size()))
+	w.Header().Add("Content-Disposition", "attachment; filename=\"ksamlauth\"")
 	w.WriteHeader(200)
 	written, err := io.Copy(w, fl)
 	if err != nil {

@@ -9,6 +9,8 @@ mountpoint=$(buildah mount $container)
 
 echo "Copying ksamlauth and making it executable"
 cp ../ksamlauth $mountpoint
+cp ../ksamlauth-win $mountpoint
+cp ../ksamlauth-mac $mountpoint
 chmod a+x $mountpoint/ksamlauth
 
 echo "Setting container entrypoint and UID=1000"
