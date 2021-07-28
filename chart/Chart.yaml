@@ -1,0 +1,6 @@
+apiVersion: v2
+name: ksamlauth-daemon
+description: ksamlauth-daemon takes care of validating the SAML2.0 response from the IdP and managing the corresponding service accounts
+type: application
+version: 0.1.0
+appVersion: "1c82fcabbd"

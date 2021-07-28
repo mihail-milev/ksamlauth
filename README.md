@@ -23,9 +23,9 @@ Here is the image also available on the blog post:
 make
 ```
 2. push the image to a registry, which your cluster can pull images from, or download it from [my ghcr.io repo](https://github.com/mihail-milev/ksamlauth/pkgs/container/ksamlauth);
-3. download the example [install.yaml](/assets/install.yaml) file. There are 3 fields in the form "{{.Template.XXX}}", which need to be defined by you. After these have been defined, execute
+3. use the [helm charts](/chart) to deploy the daemon. The two parameters "ingressURL" and "idpCertificate" MUST be set. The parameter "userconfigFile" is optional. Use the parameter "image" if you want to use your custom built image
 ```
-kubectl apply -n {desired-namespace} -f install.yaml
+helm install --set ingressURL=ksamlauth.url-to-cluster.com --set idpCertificate="$(cat idpcert.crt)" --set userconfigFile="$(cat provided_ksamlauth.toml)" -n users ksamlauth ./chart
 ```
 4. wait for the pod to become ready and download the client by executing the following command. This will download the Linux binary, but if you specify "?os=mac" or "?os=win" at the end, the binary for the corresponding OS will be downloaded.
 ```
@@ -56,7 +56,7 @@ A lot ...
 
 1. Let "ksamlauth login" first verify the SAML response before it is saved to a file;
 2. test some edge cases for "ksamlauth daemon";
-3. Helm chart?
+3. extend the Helm charts with more options.
 
 # License
 

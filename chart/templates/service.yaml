@@ -1,0 +1,13 @@
+kind: Service
+apiVersion: v1
+metadata:
+  name: ksamlauth-daemon
+spec:
+  ports:
+    - protocol: TCP
+      port: 16161
+      targetPort: 16161
+  selector:
+    app: ksamlauth-daemon
+  type: ClusterIP
+  sessionAffinity: None

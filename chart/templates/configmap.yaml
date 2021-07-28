@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ksamlauth-config
+data:
+  idp_certificate: |
+{{ .Values.idpCertificate | indent 4 }}

@@ -1,0 +1,12 @@
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: ksamlauth-sa-control-sa-read-secrets
+subjects:
+  - kind: ServiceAccount
+    name: ksamlauth-sa
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ksamlauth-role-control-sa-read-secrets

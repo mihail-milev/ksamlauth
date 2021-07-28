@@ -1,0 +1,8 @@
+# deliberately no default values here, as we want these to be set by the user
+# - ingressURL
+# - idpCertificate
+
+# this one is optional:
+# - userconfigFile
+
+image: ghcr.io/mihail-milev/ksamlauth:1c82fcabbd
