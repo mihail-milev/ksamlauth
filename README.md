@@ -18,7 +18,7 @@ Here is the image also available on the blog post:
 
 **Important note:** the install.yaml file mentioned in step 3 below will configure "ksamlauth daemon" to store all users' service accounts into the same namespace where the daemon is deployed into. If you want to change this behaviour, you have to heavily modify the install.yaml file - changing the corresponding environment variable, roles and role bindings.
 
-1. Compile the program by executing
+1. Compile the program by executing (optional if you don't want to download my pre-compiled image - see step 2)
 ```
 make
 ```
