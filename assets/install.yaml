@@ -68,7 +68,7 @@ spec:
     spec:
       containers:
         - name: ksamlauth-daemon
-          image: 'ghcr.io/mihail-milev/ksamlauth:8e69dd7764'
+          image: 'ghcr.io/mihail-milev/ksamlauth:4b88c2f663'
           ports:
             - containerPort: 16161
               protocol: TCP
