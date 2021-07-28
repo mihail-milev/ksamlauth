@@ -68,7 +68,7 @@ spec:
     spec:
       containers:
         - name: ksamlauth-daemon
-          image: 'ghcr.io/mihail-milev/ksamlauth:4b88c2f663'
+          image: 'ghcr.io/mihail-milev/ksamlauth:9343fd2667'
           ports:
             - containerPort: 16161
               protocol: TCP
@@ -89,6 +89,8 @@ spec:
       terminationGracePeriodSeconds: 10
       dnsPolicy: ClusterFirst
       schedulerName: default-scheduler
+      serviceAccount: ksamlauth-sa
+      serviceAccountName: ksamlauth-sa
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -96,8 +98,6 @@ spec:
       maxSurge: 25%
   revisionHistoryLimit: 10
   progressDeadlineSeconds: 600
-  serviceAccount: ksamlauth-sa
-  serviceAccountName: ksamlauth-sa
 ---
 kind: Service
 apiVersion: v1
