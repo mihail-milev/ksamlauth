@@ -16,16 +16,18 @@ Here is the image also available on the blog post:
 
 ## Procedure
 
+**Important note:** the install.yaml file mentioned in step 3 below will configure "ksamlauth daemon" to store all users' service accounts into the same namespace where the daemon is deployed into. If you want to change this behaviour, you have to heavily modify the install.yaml file - changing the corresponding environment variable, roles and role bindings.
+
 1. Compile the program by executing
 ```
 make
 ```
-2. push the image to a registry, which your cluster can pull images from;
+2. push the image to a registry, which your cluster can pull images from, or download it from [my ghcr.io repo](https://github.com/mihail-milev/ksamlauth/pkgs/container/ksamlauth);
 3. download the example [install.yaml](/assets/install.yaml) file. There are 3 fields in the form "{{.Template.XXX}}", which need to be defined by you. After these have been defined, execute
 ```
 kubectl apply -n {desired-namespace} -f install.yaml
 ```
-4. wait for the pod to become ready and download the client by executing
+4. wait for the pod to become ready and download the client by executing the following command. This will download the Linux binary, but if you specify "?os=mac" or "?os=win" at the end, the binary for the corresponding OS will be downloaded.
 ```
 curl -o ksamlauth https://url-to-ksamlauth-ingress.com/download
 ```
