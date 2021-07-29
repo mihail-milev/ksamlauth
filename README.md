@@ -62,8 +62,12 @@ Under the configuration folder (by default ~/.kube) "ksamlauth login" will searc
 port = 16160
 endpoint = "https://url.to.idp/endpoint"
 entity_id = "entitiy-or-client-id-as-per-IdP"
-my_key = "-----BEGIN RSA PRIVATE KEY-----\nmy own private key data comes in here\n-----END RSA PRIVATE KEY-----"
-my_certificate = "-----BEGIN CERTIFICATE-----\nmy own certificate data comes in here\n-----END CERTIFICATE-----"
+my_key = """-----BEGIN RSA PRIVATE KEY-----
+my own private key data comes in here
+-----END RSA PRIVATE KEY-----"""
+my_certificate = """-----BEGIN CERTIFICATE-----
+my own certificate data comes in here
+-----END CERTIFICATE-----"""
 
 # [[clusters]]
 # ca_cert_base64 = "base64-encoded-CA-from-cluster"
