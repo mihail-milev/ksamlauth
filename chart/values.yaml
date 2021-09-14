@@ -5,4 +5,4 @@
 # this one is optional:
 # - userconfigFile
 
-image: ghcr.io/mihail-milev/ksamlauth:1c82fcabbd
+image: ghcr.io/mihail-milev/ksamlauth:b2bda7f2f0
