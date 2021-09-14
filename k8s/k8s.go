@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -16,35 +17,41 @@ const (
 	NOT_FOUND_ERROR = "not found"
 )
 
+// ffjson: skip
 type Metadata struct {
 	Name        string            `json:"name"`
 	Namespace   string            `json:"namespace"`
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
+// ffjson: skip
 type ServiceAccount struct {
 	Metadata Metadata `json:"metadata"`
 }
 
+// ffjson: noencoder
 type ServiceAccountList struct {
 	Items []ServiceAccount `json:"items"`
 }
 
+// ffjson: skip
 type SecretData struct {
 	Token string `json:"token"`
 }
 
+// ffjson: skip
 type Secret struct {
 	Metadata Metadata   `json:"metadata"`
 	Data     SecretData `json:"data"`
 }
 
+// ffjson: skip
 type SecretList struct {
 	Items []Secret `json:"items"`
 }
 
 type K8sConnection interface {
-	GetAllSAinNamespace(namespace string) (ServiceAccountList, error)
+	GetAllSAinNamespace(namespace string) (*ServiceAccountList, error)
 	SearchForSa(name, namespace string) (ServiceAccount, error)
 	CreateSa(name, namespace string, annotations map[string]string) error
 	GetTokenForSa(name, namespace string) (string, error)
@@ -52,23 +59,16 @@ type K8sConnection interface {
 	PatchSaAnnotations(name, namespace string, annotations map[string]string) error
 }
 
+// ffjson: skip
 type K8sConnectionDefault struct {
-	CACert  *x509.Certificate
-	Token   *string
-	Address string
+	HttpClient *http.Client
+	Token      *string
+	Address    string
 }
 
 func NewK8sConnection(token *string, cacert *x509.Certificate, address string) K8sConnection {
-	return &K8sConnectionDefault{
-		CACert:  cacert,
-		Token:   token,
-		Address: address,
-	}
-}
-
-func (k *K8sConnectionDefault) performRestRequest(method, uri, body string, opts ...string) (string, error) {
 	certpool := x509.NewCertPool()
-	certpool.AddCert(k.CACert)
+	certpool.AddCert(cacert)
 	client := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
@@ -76,12 +76,35 @@ func (k *K8sConnectionDefault) performRestRequest(method, uri, body string, opts
 			},
 		},
 	}
-	req, err := http.NewRequest(method, fmt.Sprintf("%s%s", k.Address, uri), nil)
+	return &K8sConnectionDefault{
+		HttpClient: client,
+		Token:      token,
+		Address:    address,
+	}
+}
+
+func (k *K8sConnectionDefault) readAll(body io.Reader, size int) ([]byte, error) {
+	buf := make([]byte, size)
+	cnt := 0
+	for {
+		n, err := body.Read(buf[cnt:])
+		if err != nil && err != io.EOF {
+			return []byte{}, err
+		}
+		cnt += n
+		if cnt >= size || err == io.EOF {
+			return buf, nil
+		}
+	}
+}
+
+func (k *K8sConnectionDefault) performRestRequest(method, uri, body string, opts ...string) ([]byte, error) {
+	req, err := http.NewRequest(method, k.Address+uri, nil)
 	if err != nil {
-		return "", err
+		return []byte{}, err
 	}
 	req.Header.Add("Accept", "application/json")
-	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", *k.Token))
+	req.Header.Add("Authorization", "Bearer "+*k.Token)
 	if len(opts) > 0 {
 		req.Header.Add("Content-Type", opts[0])
 	} else {
@@ -91,32 +114,40 @@ func (k *K8sConnectionDefault) performRestRequest(method, uri, body string, opts
 		bodyReader := strings.NewReader(body)
 		req.Body = io.NopCloser(bodyReader)
 	}
-	resp, err := client.Do(req)
+	resp, err := k.HttpClient.Do(req)
 	if err != nil {
-		return "", err
+		return []byte{}, err
 	}
-	defer resp.Body.Close()
-	bodyDt, err := ioutil.ReadAll(resp.Body)
+	var bodyDt []byte
+	clString := resp.Header.Get("Content-Length")
+	clInt, err := strconv.Atoi(clString)
+	if clString == "" || err != nil {
+		bodyDt, err = ioutil.ReadAll(resp.Body)
+	} else {
+		bodyDt, err = k.readAll(resp.Body, clInt)
+	}
+	resp.Body.Close()
 	if err != nil {
-		return "", err
+		return []byte{}, err
 	}
 	if resp.StatusCode > 299 {
-		return "", fmt.Errorf("HTTP status code: %d, Body: %s", resp.StatusCode, string(bodyDt))
+		return []byte{}, fmt.Errorf("HTTP status code: %d, Body: %s", resp.StatusCode, string(bodyDt))
 	}
-	return string(bodyDt), nil
+	return bodyDt, nil
 }
 
-func (k *K8sConnectionDefault) GetAllSAinNamespace(namespace string) (ServiceAccountList, error) {
-	respBody, err := k.performRestRequest("GET", fmt.Sprintf("/api/v1/namespaces/%s/serviceaccounts", namespace), "")
-	if err != nil {
-		return ServiceAccountList{}, err
-	}
+func (k *K8sConnectionDefault) GetAllSAinNamespace(namespace string) (*ServiceAccountList, error) {
 	var sal ServiceAccountList
-	err = json.Unmarshal([]byte(respBody), &sal)
+	respBody, err := k.performRestRequest("GET", "/api/v1/namespaces/"+namespace+"/serviceaccounts", "")
 	if err != nil {
-		return ServiceAccountList{}, err
+		return &sal, err
 	}
-	return sal, nil
+	/*err = json.Unmarshal(respBody, &sal)
+	if err != nil {
+		return &ServiceAccountList{}, err
+	}*/
+	err = sal.UnmarshalJSON(respBody)
+	return &sal, err
 }
 
 func (k *K8sConnectionDefault) SearchForSa(name, namespace string) (ServiceAccount, error) {
@@ -154,7 +185,7 @@ func (k *K8sConnectionDefault) GetTokenForSa(name, namespace string) (string, er
 		return "", err
 	}
 	var sl SecretList
-	err = json.Unmarshal([]byte(respBody), &sl)
+	err = json.Unmarshal(respBody, &sl)
 	if err != nil {
 		return "", err
 	}

@@ -371,6 +371,7 @@ func saPruner(k8sconfig *KubernetesSAInfo, k8sendpoint string) {
 				}
 			}
 		}
+		sa_in_ns = nil
 	}
 }
 
